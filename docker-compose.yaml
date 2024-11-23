@@ -1,0 +1,207 @@
+# version: "3.8"
+
+# services:
+#   frontend:
+#     build:
+#       context: ./frontend
+#       dockerfile: Dockerfile
+#     depends_on:
+#       - backend
+#     ports:
+#       - "80:80"
+#     networks:
+#       - backend_network
+#     environment:
+#       - NODE_ENV=prodcution
+#       - VITE_API_URL=http://localhost:8000
+#     volumes:
+#       - .:/app
+#       - /app/node_modules
+#   backend:
+#     build:
+#       context: ./backend
+#       dockerfile: Dockerfile
+#     depends_on:
+#       - postgres
+#     ports:
+#       - "8000:8000"
+#     networks:
+#       - backend_network
+#     env_file:
+#       - ./backend/.env
+#     command: /bin/sh -c "chmod +x /backend/prestart.sh && poetry run bash /backend/prestart.sh && poetry run uvicorn app.main:app --reload --host 0.0.0.0"
+
+#   postgres:
+#     image: postgres:14 # Use the official PostgreSQL image
+#     container_name: fastapi-db
+#     environment:
+#       POSTGRES_USER: postgres # Default user for PostgreSQL
+#       POSTGRES_PASSWORD: 1234567890 # Default password for PostgreSQL
+#       POSTGRES_DB: postgres # Database name
+#     volumes:
+#       - postgres_data:/var/lib/postgresql/data # Persist PostgreSQL data
+#     ports:
+#       - "8900:5432" # Expose PostgreSQL on port 5432
+#     networks:
+#       - backend_network
+#   adminer_container:
+#     image: adminer
+#     environment: 
+#         ADMINER_DEFAULT_SERVER: postgres
+#         ADMINER_DESIGN: galkaev
+#     depends_on:
+#       - postgres
+#     ports: 
+#       - 9000:8080
+#     networks:
+#       - backend_network
+
+# networks:
+#   backend_network:
+#     driver: bridge
+
+# volumes:
+#   postgres_data:
+#     driver: local
+
+version: "3.8"
+
+x-logging:
+  &default-logging
+  driver: "json-file"
+  options:
+    max-size: "1m"
+    max-file: "1"
+
+services:
+  traefik:
+    image: traefik:v2.10
+    container_name: traefik
+    command:
+      - "--api.insecure=true"
+      - "--api.dashboard=true"
+      - "--providers.docker=true"
+      - "--entrypoints.web.address=:80"
+      - "--providers.docker.exposedbydefault=false"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.web.http.redirections.entryPoint.to=websecure"
+      - "--entrypoints.web.http.redirections.entryPoint.scheme=https"
+      - "--certificatesresolvers.myresolver.acme.httpchallenge=true" # Use TLS challenge for HTTPS
+      - "--certificatesresolvers.myresolver.acme.email=legendsergio@gmail.com" # Email for Let's Encrypt
+      - "--certificatesresolvers.myresolver.acme.storage=/letsencrypt/acme.json" # File to store certificates
+      - "--certificatesresolvers.myresolver.acme.httpchallenge.entrypoint=web"
+      - "--log.level=DEBUG"  # Increase log verbosity
+    ports:
+      - "80:80" # HTTP traffic
+      - "443:443" # HTTPS traffic
+      - "8080:8080" # Traefik dashboard
+    labels:
+      - "traefik.enable=true"
+      # Dashboard configuration
+      - "traefik.http.routers.dashboard.rule=Host(`app1.ukpono.site`) && PathPrefix(`/dashboard`)"
+      - "traefik.http.routers.dashboard.service=api@internal"
+      - "traefik.http.routers.dashboard.entrypoints=websecure"
+      - "traefik.http.routers.dashboard.tls.certresolver=myresolver"
+      # Global redirect configuration
+      - "traefik.http.middlewares.https-redirect.redirectscheme.scheme=https"
+      - "traefik.http.middlewares.https-redirect.redirectscheme.permanent=true"
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock:ro" # Access Docker socket
+      - "./letsencrypt:/letsencrypt" # Directory to store Let's Encrypt data
+    networks:
+      - backend_network
+    # logging: *default-logging
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    depends_on:
+      - backend
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.frontend.rule=Host(`app1.ukpono.site`) && PathPrefix(`/`)"
+      - "traefik.http.middlewares.frontend-stripprefix.stripprefix.prefixes=/api,/docs"
+      - "traefik.http.routers.frontend.middlewares=frontend-stripprefix"
+      - "traefik.http.services.frontend.loadbalancer.server.port=80"
+      - "traefik.http.routers.frontend.tls=true"
+      - "traefik.http.routers.frontend.entrypoints=websecure"
+      - "traefik.http.routers.frontend.tls.certresolver=myresolver"
+    ports:
+      - "8082:80"
+    networks:
+      - backend_network
+    environment:
+      - NODE_ENV=production
+      - VITE_API_URL=http://localhost:8000
+    volumes:
+      - .:/app
+      - /app/node_modules
+    logging: *default-logging
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    depends_on:
+      - postgres
+    ports:
+      - "8000:8000"
+    labels:
+      - "traefik.enable=true"
+      # Router for API endpoints
+      - "traefik.http.routers.backend.rule=Host(`app1.ukpono.site`) && (PathPrefix(`/api`) || PathPrefix(`/docs`))"
+      - "traefik.http.routers.backend.entrypoints=websecure"
+      - "traefik.http.routers.backend.tls.certresolver=myresolver"
+      - "traefik.http.routers.backend.tls=true"
+      - "traefik.http.services.backend.loadbalancer.server.port=8000"
+    networks:
+      - backend_network
+    env_file:
+      - ./backend/.env
+    command: /bin/sh -c "chmod +x /backend/prestart.sh && poetry run bash /backend/prestart.sh && poetry run uvicorn app.main:app --reload --host 0.0.0.0"
+    logging: *default-logging
+
+  postgres:
+    image: postgres:14
+    container_name: fastapi-db
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 1234567890
+      POSTGRES_DB: fastapi
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "8900:5432"
+    networks:
+      - backend_network
+    logging: *default-logging
+
+  adminer:
+    image: adminer
+    environment: 
+      ADMINER_DEFAULT_SERVER: postgres
+      ADMINER_DESIGN: galkaev
+    depends_on:
+      - postgres
+    ports: 
+      - 9001:8080
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.adminer.rule=Host(`app1.ukpono.site`) && PathPrefix(`/db`)"
+      - "traefik.http.routers.adminer.entrypoints=websecure"
+      - "traefik.http.routers.adminer.tls.certresolver=myresolver"
+      - "traefik.http.middlewares.adminer-strip.stripprefix.prefixes=/db"
+      - "traefik.http.routers.adminer.middlewares=adminer-strip"
+      - "traefik.http.routers.adminer.tls=true"
+      - "traefik.http.services.adminer.loadbalancer.server.port=8080"
+    networks:
+      - backend_network
+    logging: *default-logging
+
+networks:
+  backend_network:
+    driver: bridge
+
+volumes:
+  postgres_data:
+    driver: local

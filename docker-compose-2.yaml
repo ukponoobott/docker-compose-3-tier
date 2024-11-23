@@ -1,0 +1,95 @@
+version: "3.8"
+
+services:
+  loki:
+    image: grafana/loki:3.0.0
+    container_name: loki
+    ports:
+      - "3100:3100" # Loki's HTTP API
+    command: -config.file=/etc/loki/loki.yaml
+    volumes:
+      - ./config/loki/loki.yaml:/etc/loki/loki.yaml # Loki configuration
+      - loki_data:/loki # Persistent storage for logs
+    networks:
+      - backend_network
+
+  promtail:
+    image: grafana/promtail:3.0.0
+    container_name: promtail
+    volumes:
+      - ./config/promtail/promtail.yaml:/etc/promtail/docker-config.yaml # Promtail configuration
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro # Access Docker logs
+      - /var/run/docker.sock:/var/run/docker.sock # Access Docker runtime
+    command: -config.file=/etc/promtail/docker-config.yaml
+    depends_on:
+      - loki
+    networks:
+      - backend_network
+
+  grafana:
+    image: grafana/grafana:11.0.0
+    container_name: grafana
+    ports:
+      - "3000:3000" # Grafana's web interface
+    labels:
+      - "traefik.enable=true"
+      # Router configuration for Grafana
+      - "traefik.http.routers.grafana.rule=Host(`app1.ukpono.site`) && PathPrefix(`/grafana`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.tls.certresolver=myresolver"
+      - "traefik.http.routers.grafana.tls=true"
+      # Service configuration
+      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+    volumes:
+      - ./config/grafana/datasources/grafana.yaml:/etc/grafana/provisioning/datasources/datasources.yaml # Datasource configuration
+      - ./config/grafana/grafana.ini:/etc/grafana/grafana.ini
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true # Enable anonymous access
+    networks:
+      - backend_network
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:latest
+    container_name: cadvisor
+    ports:
+      - "8081:8080" # cAdvisor web interface
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+    networks:
+      - backend_network
+    # logging: *default-logging
+  prometheus:
+    image: prom/prometheus:latest
+    command:
+      - "--config.file=/etc/prometheus/prometheus.yml"
+      - "--web.external-url=/prometheus"
+      - "--web.route-prefix=/"
+    container_name: prometheus
+    ports:
+      - "9090:9090" # Prometheus web interface
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.prometheus.rule=Host(`app1.ukpono.site`) && PathPrefix(`/prometheus`)"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
+      - "traefik.http.routers.prometheus.tls.certresolver=myresolver"
+      - "traefik.http.routers.prometheus.middlewares=prometheus-strip"
+      - "traefik.http.middlewares.prometheus-strip.stripPrefix.prefixes=/prometheus"
+      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+      - "traefik.http.routers.prometheus.service=prometheus"
+      - "traefik.http.middlewares.prometheus-strip.stripprefix.forceSlash=false"
+      - "traefik.http.routers.prometheus.tls=true"
+    volumes:
+      - ./config/prometheus/prometheus.yaml:/etc/prometheus/prometheus.yml
+    networks:
+      - backend_network
+    # logging: *default-logging
+
+networks:
+  backend_network:
+    external: true
+
+volumes:
+  loki_data:
+    driver: local
